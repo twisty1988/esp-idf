@@ -38,7 +38,7 @@ static const char *TAG = "dvp_gdma";
  *      - ESP_OK on success
  *      - Others if failed
  */
-static void IRAM_ATTR esp_cam_ctlr_dvp_config_dma_desc(esp_cam_ctlr_dvp_dma_desc_t *desc, uint8_t *buffer, uint32_t size, uint32_t max_desc_size)
+static size_t IRAM_ATTR esp_cam_ctlr_dvp_config_dma_desc(esp_cam_ctlr_dvp_dma_desc_t *desc, uint8_t *buffer, uint32_t size, uint32_t max_desc_size)
 {
     size_t n = 0;
 
@@ -61,6 +61,8 @@ static void IRAM_ATTR esp_cam_ctlr_dvp_config_dma_desc(esp_cam_ctlr_dvp_dma_desc
     if (n > 0) {
         desc[n - 1].next = NULL;
     }
+
+    return n;
 }
 
 /**
@@ -69,12 +71,13 @@ static void IRAM_ATTR esp_cam_ctlr_dvp_config_dma_desc(esp_cam_ctlr_dvp_dma_desc
  * @param dma  DVP DMA object pointer
  * @param burst_size DVP DMA burst transmission block size
  * @param size DVP DMA buffer size
+ * @param frame_tail Whether to append a frame tail buffer
  *
  * @return
  *      - ESP_OK on success
  *      - Others if failed
  */
-esp_err_t esp_cam_ctlr_dvp_dma_init(esp_cam_ctlr_dvp_dma_t *dma, uint32_t burst_size, size_t size)
+esp_err_t esp_cam_ctlr_dvp_dma_init(esp_cam_ctlr_dvp_dma_t *dma, uint32_t burst_size, size_t size, bool frame_tail)
 {
     esp_err_t ret = ESP_OK;
     size_t alignment_size;
@@ -118,6 +121,7 @@ esp_err_t esp_cam_ctlr_dvp_dma_init(esp_cam_ctlr_dvp_dma_t *dma, uint32_t burst_
     if (size % desc_max_size) {
         dma->desc_count++;
     }
+    dma->desc_count += frame_tail;
     dma->size = size;
     alignment_size = (alignment_size == 0) ? 1 : alignment_size;
     dma->desc_size = ESP_ALIGN_UP(dma->desc_count * sizeof(esp_cam_ctlr_dvp_dma_desc_t), alignment_size);
@@ -127,8 +131,15 @@ esp_err_t esp_cam_ctlr_dvp_dma_init(esp_cam_ctlr_dvp_dma_t *dma, uint32_t burst_
 
     ESP_GOTO_ON_FALSE(dma->desc, ESP_ERR_NO_MEM, fail1, TAG, "no mem for DVP DMA descriptor");
 
+    if (frame_tail) {
+        dma->frame_tail = heap_caps_aligned_alloc(MAX(dma->int_mem_align, 1), ESP_CAM_CTLR_DVP_DMA_FRAME_TAIL_SIZE, MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
+        ESP_GOTO_ON_FALSE(dma->frame_tail, ESP_ERR_NO_MEM, fail2, TAG, "no mem for DVP DMA frame tail");
+    }
+
     return ESP_OK;
 
+fail2:
+    heap_caps_free(dma->desc);
 fail1:
     gdma_disconnect(dma->dma_chan);
 fail0:
@@ -151,6 +162,7 @@ esp_err_t esp_cam_ctlr_dvp_dma_deinit(esp_cam_ctlr_dvp_dma_t *dma)
     ESP_RETURN_ON_ERROR(gdma_del_channel(dma->dma_chan), TAG, "delete dma channel failed");
 
     heap_caps_free(dma->desc);
+    heap_caps_free(dma->frame_tail);
 
     return ESP_OK;
 }
@@ -178,7 +190,11 @@ esp_err_t IRAM_ATTR esp_cam_ctlr_dvp_dma_start(esp_cam_ctlr_dvp_dma_t *dma, uint
     if (buffer_alignment > 1) {
         max_desc_size = ESP_ALIGN_DOWN(max_desc_size, buffer_alignment);
     }
-    esp_cam_ctlr_dvp_config_dma_desc(dma->desc, buffer, size, max_desc_size);
+    size_t desc_count = esp_cam_ctlr_dvp_config_dma_desc(dma->desc, buffer, size, max_desc_size);
+    if (dma->frame_tail && desc_count > 0) {
+        esp_cam_ctlr_dvp_config_dma_desc(&dma->desc[desc_count], dma->frame_tail, ESP_CAM_CTLR_DVP_DMA_FRAME_TAIL_SIZE, ESP_CAM_CTLR_DVP_DMA_FRAME_TAIL_SIZE);
+        dma->desc[desc_count - 1].next = &dma->desc[desc_count];
+    }
 
     if (esp_ptr_external_ram(dma->desc)) {
         esp_err_t ret = esp_cache_msync(dma->desc, dma->desc_size, ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_INVALIDATE);

@@ -181,6 +181,8 @@ static IRAM_ATTR esp_err_t esp_cam_ctlr_dvp_start_trans(esp_cam_ctlr_dvp_cam_t *
     ESP_RETURN_ON_ERROR(esp_cache_msync((void *)(trans.buffer), trans.buflen, ESP_CACHE_MSYNC_FLAG_DIR_M2C),
                         TAG, "failed to sync(M2C) trans buffer");
 
+    /* Discard any partial sample left at the previous VSYNC boundary. */
+    cam_ll_fifo_reset(ctlr->hal.hw);
     ESP_RETURN_ON_ERROR_ISR(esp_cam_ctlr_dvp_dma_reset(&ctlr->dma), TAG, "failed to reset DMA");
     ESP_RETURN_ON_ERROR_ISR(esp_cam_ctlr_dvp_dma_start(&ctlr->dma, trans.buffer, ctlr->fb_size_in_bytes), TAG, "failed to start DMA");
 
@@ -232,11 +234,16 @@ static uint32_t IRAM_ATTR esp_cam_ctlr_dvp_get_recved_size(esp_cam_ctlr_dvp_cam_
     if (ctlr->pic_format_jpeg) {
         recv_buffer_size = ESP_ALIGN_UP(MIN(dma_recv_size, ctlr->fb_size_in_bytes), 64);
     } else {
+        /* A short frame is incomplete; extra bytes are isolated in the DMA tail buffer. */
+        if (dma_recv_size < ctlr->fb_size_in_bytes) {
+            return 0;
+        }
         recv_buffer_size = ctlr->fb_size_in_bytes;
     }
 
     if (esp_ptr_external_ram(rx_buffer)) {
-        esp_err_t ret = esp_cache_msync(rx_buffer, recv_buffer_size, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+        const size_t sync_size = MIN(ESP_ALIGN_UP(recv_buffer_size, 64), ctlr->fb_size_in_bytes);
+        esp_err_t ret = esp_cache_msync(rx_buffer, sync_size, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
         assert(ret == ESP_OK);
         (void)ret;
 
@@ -887,7 +894,7 @@ esp_err_t esp_cam_new_dvp_ctlr(const esp_cam_ctlr_dvp_config_t *config, esp_cam_
         ESP_GOTO_ON_FALSE(ctlr->backup_buffer, ESP_ERR_NO_MEM, fail2, TAG, "no mem for DVP backup buffer");
     }
 
-    ESP_GOTO_ON_ERROR(esp_cam_ctlr_dvp_dma_init(&ctlr->dma, config->dma_burst_size, fb_size_in_bytes),
+    ESP_GOTO_ON_ERROR(esp_cam_ctlr_dvp_dma_init(&ctlr->dma, config->dma_burst_size, fb_size_in_bytes, !config->pic_format_jpeg),
                       fail3, TAG, "failed to initialize DVP DMA");
 
     gdma_rx_event_callbacks_t cbs = {

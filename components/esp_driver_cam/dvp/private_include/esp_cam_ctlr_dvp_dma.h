@@ -14,6 +14,7 @@ extern "C" {
 #endif
 
 #define ESP_CAM_CTLR_DVP_DMA_DESC_BUFFER_MAX_SIZE   DMA_DESCRIPTOR_BUFFER_MAX_SIZE_4B_ALIGNED
+#define ESP_CAM_CTLR_DVP_DMA_FRAME_TAIL_SIZE        64
 
 /**
  * @brief DVP DMA description object
@@ -31,6 +32,7 @@ typedef struct esp_cam_ctlr_dvp_dma {
     gdma_channel_handle_t dma_chan;                 /*!< DVP DMA channel handle */
     size_t size;                                    /*!< DVP DMA buffer size */
     esp_cam_ctlr_dvp_dma_desc_t *desc;              /*!< DVP DMA description buffer */
+    uint8_t *frame_tail;                            /*!< DVP DMA frame tail buffer */
     size_t desc_count;                              /*!< DVP DMA description count */
     size_t desc_size;                               /*!< DVP DMA description buffer size in byte */
     size_t int_mem_align;                           /*!< DVP DMA internal memory alignment */
@@ -43,12 +45,13 @@ typedef struct esp_cam_ctlr_dvp_dma {
  * @param dma  DVP DMA object pointer
  * @param burst_size DVP DMA burst transmission block size
  * @param size DVP DMA buffer size
+ * @param frame_tail Whether to append a frame tail buffer
  *
  * @return
  *      - ESP_OK on success
  *      - Others if failed
  */
-esp_err_t esp_cam_ctlr_dvp_dma_init(esp_cam_ctlr_dvp_dma_t *dma, uint32_t burst_size, size_t size);
+esp_err_t esp_cam_ctlr_dvp_dma_init(esp_cam_ctlr_dvp_dma_t *dma, uint32_t burst_size, size_t size, bool frame_tail);
 
 /**
  * @brief De-initialize DVP DMA object
